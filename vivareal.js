@@ -11,81 +11,96 @@ async function scrape() {
   });
 
   let currentPage = 1;
-  const maxPages = 193; // Defina o número máximo de páginas a serem visitadas
-
-  const baseUrl = 'https://www.vivareal.com.br/venda/espirito-santo/guarapari/#onde=Brasil,Esp%C3%ADrito%20Santo,Guarapari,,,,,,BR%3EEspirito%20Santo%3ENULL%3EGuarapari,,,';
+  const maxPages = 42; // Limite de 10 trocas de página
+  const baseUrl = 'https://www.vivareal.com.br/venda/espirito-santo/guarapari/apartamento_residencial/?transacao=venda&onde=,Esp%C3%ADrito%20Santo,Guarapari,,,,,city,BR%3EEspirito%20Santo%3ENULL%3EGuarapari,-20.673893,-40.499984,&tipos=apartamento_residencial&pagina=26';
 
   const workbook = new ExcelJS.Workbook();
   const worksheet = workbook.addWorksheet('Propriedades');
 
   // Adiciona cabeçalhos
-  worksheet.addRow(['Endereço', 'Quartos', 'Área', 'Banheiros', 'Garagens', 'Preço']);
+  worksheet.addRow(['Endereço', 'Área', 'Quartos', 'Banheiros', 'Preço']);
+
+  // Função para simular o scroll do mouse
+  async function autoScroll(page) {
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let totalHeight = 0;
+        const distance = 100; // Distância a ser rolada a cada iteração
+        const timer = setInterval(() => {
+          const scrollHeight = document.body.scrollHeight;
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+
+          if (totalHeight >= scrollHeight) {
+            clearInterval(timer);
+            resolve();
+          }
+        }, 100); // Intervalo entre os movimentos de scroll
+      });
+    });
+  }
 
   while (currentPage <= maxPages) {
-    // Navega até a página desejada
-    await page.goto(`${baseUrl}&pagina=${currentPage}`, { waitUntil: 'domcontentloaded' });
-
-    // Espera até que os elementos desejados estejam completamente carregados
-    await page.waitForSelector('span.property-card__address');
-
-    // Extrai os endereços, detalhes e preços das propriedades
-    const properties = await page.evaluate(() => {
-      const enderecoElements = [...document.querySelectorAll("span.property-card__address")];
-        const quartoElements = [...document.querySelectorAll("li.property-card__detail-item.property-card__detail-room.js-property-detail-rooms")];
-        const areaElements = [...document.querySelectorAll("li.property-card__detail-item.property-card__detail-area")];
-        const banheiroElements = [...document.querySelectorAll("li.property-card__detail-item.property-card__detail-bathroom.js-property-detail-bathroom")];
-        const garageElements = [...document.querySelectorAll("li.property-card__detail-item.property-card__detail-garage.js-property-detail-garages")];
-        const precoElements = [...document.querySelectorAll("div.property-card__price.js-property-card-prices.js-property-card__price-small")];
-      
-        return enderecoElements.map((addressElement, index) => {
-          const quartos = quartoElements[index]?.textContent.trim() || 'N/A';
-          const area = areaElements[index]?.textContent.trim() || 'N/A';
-          const banheiros = banheiroElements[index]?.textContent.trim() || 'N/A';
-          const garagens = garageElements[index]?.textContent.trim() || 'N/A';
-          const preco = precoElements[index]?.textContent.trim() || 'N/A';
-
-          return {
-            Endereco: addressElement.textContent.trim(),
-            Quartos: quartos,
-            Area: area,
-            Banheiros: banheiros,
-            Garagens: garagens,
-            Preco: preco
-          };
-        });
-      });
-
-      properties.forEach(property => {
-        worksheet.addRow([property.Endereco, property.Quartos, property.Area, property.Banheiros, property.Garagens, property.Preco]);
-      });
-
-    // Aguarda totalmente o carregamento da próxima página
     try {
-      // Espera até que o botão "Próxima página" esteja disponível
-      await page.waitForSelector('button[title="Próxima página"]');
-      
-      // Aguarda 3 segundos antes de clicar no botão "Próxima página"
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      // Clica no botão "Próxima página"
-      await page.click('button[title="Próxima página"]');
+      // Navega até a página desejada
+      console.log(`Acessando página ${currentPage}...`);
+      await page.goto(baseUrl, { waitUntil: 'networkidle2' });
 
-      // Imprime a nova URL após clicar no botão "Próxima página"
-      console.log('Nova URL:', page.url());
+      // Rola a página para carregar todos os elementos dinâmicos
+      await autoScroll(page);
+
+      // Espera até que os elementos desejados estejam completamente carregados
+      await page.waitForSelector('section.card__location.overflow-hidden', { timeout: 60000 });
+
+      // Extrai os endereços, detalhes e preços das propriedades
+      const properties = await page.evaluate(() => {
+        const enderecoElements = [...document.querySelectorAll("section.card__location.overflow-hidden")];
+        const areaElements = [...document.querySelectorAll('p[itemprop="floorSize"]')];
+        const quartoElements = [...document.querySelectorAll('p[itemprop="numberOfRooms"]')];
+        const banheiroElements = [...document.querySelectorAll('p[itemprop="numberOfBathroomsTotal"]')];
+        const precoElements = [...document.querySelectorAll('[data-cy="rp-cardProperty-price-txt"]')];
+        
+        return enderecoElements.map((addressElement, index) => ({
+          Endereco: addressElement?.textContent.trim() || 'N/A',
+          Area: areaElements[index]?.textContent.trim() || 'N/A',
+          Quarto: quartoElements[index]?.textContent.trim() || 'N/A',
+          Banheiro: banheiroElements[index]?.textContent.trim() || 'N/A',
+          Preco: precoElements[index]?.textContent.trim() || 'N/A'
+        }));
+      });
+
+      // Escreve as informações das propriedades no arquivo Excel
+      properties.forEach(property => {
+        worksheet.addRow([property.Endereco, property.Area, property.Quarto, property.Banheiro, property.Preco]);
+      });
+
+      console.log(`Dados extraídos da página ${currentPage}.`);
+
+      // Verifica se o botão "Próxima página" está disponível antes de clicar
+      const nextPageButton = await page.$('button[data-testid="next-page"]');
+      if (nextPageButton) {
+        await nextPageButton.click();
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Pequena pausa para evitar problemas
+      } else {
+        console.log('Fim das páginas.');
+        break;
+      }
     } catch (error) {
-      console.error('Erro ao navegar para a próxima página:', error);
-      break; // Sai do loop se ocorrer um erro ao navegar
+      console.error(`Erro ao processar a página ${currentPage}:`, error);
+      break;
     }
 
     currentPage++;
   }
 
   // Salva o arquivo Excel
-  await workbook.xlsx.writeFile('vivareal2.xlsx');
+  const fileName = 'VivaReal-AP-Compra-BH.xlsx';
+  await workbook.xlsx.writeFile(fileName);
+  console.log(`Dados salvos no arquivo: ${fileName}`);
 
   // Fecha o navegador
   await browser.close();
+  console.log('Navegador fechado.');
 }
 
-// Chama a função para iniciar a raspagem
 scrape();
